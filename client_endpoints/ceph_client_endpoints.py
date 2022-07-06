@@ -28,6 +28,8 @@ class CephClientEndpoints(ClientEndpoints):
         self.recov_pool_profile = config.get('recov_pool_profile', 'default')
         self.scrub_pool = None
         self.scrub_pool_profile = config.get('scrub_pool_profile', 'default')
+        self.pg_deletion_pool = None
+        self.pg_deletion_pool_profile = config.get('pg_deletion_pool_profile', 'default')
         self.order = config.get('order', 22)
         self.disabled_features = config.get('disabled_features', None)
 
@@ -120,6 +122,15 @@ class CephClientEndpoints(ClientEndpoints):
         self.pool = '%s-scrub' % self.name
         self.cluster.rmpool(self.pool, self.scrub_pool_profile)
         self.cluster.mkpool(self.pool, self.scrub_pool_profile, 'rbd')
+        for node in common.get_fqdn_list('clients'):
+            for ep_num in range(0, self.endpoints_per_client):
+                rbd_name = '%s-%s' % (self.pool, self.get_rbd_name(node, ep_num))
+                self.cluster.mkimage(rbd_name, self.endpoint_size, self.pool, self.data_pool, self.order)
+
+    def create_rbd_pg_deletion(self):
+        self.pool = '%s-pg-deletion' % self.name
+        self.cluster.rmpool(self.pool, self.pg_deletion_pool_profile)
+        self.cluster.mkpool(self.pool, self.pg_deletion_pool_profile, 'rbd')
         for node in common.get_fqdn_list('clients'):
             for ep_num in range(0, self.endpoints_per_client):
                 rbd_name = '%s-%s' % (self.pool, self.get_rbd_name(node, ep_num))

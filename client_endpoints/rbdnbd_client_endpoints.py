@@ -19,3 +19,6 @@ class RbdNbdClientEndpoints(CephClientEndpoints):
 
     def create_scrubbing_image(self):
         self.create_rbd_scrubbing()
+
+    def create_pg_deletion_image(self):
+        self.create_rbd_pg_deletion()

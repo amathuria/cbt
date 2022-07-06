@@ -71,6 +71,8 @@ class Fio(Benchmark):
         if 'scrub_recov_test' in self.cluster.config:
             self.client_endpoints_object.create_recovery_image()
             self.client_endpoints_object.create_scrubbing_image()
+        if 'pg_deletion_test' in self.cluster.config:
+            self.client_endpoints_object.create_pg_deletion_image()
         self.create_endpoints()
 
     def create_endpoints(self):
@@ -230,6 +232,12 @@ class Fio(Benchmark):
             self.cluster.create_scrub_recovery_test(self.run_dir, scrub_recov_callback)
             self.cluster.wait_start_io()
 
+        if 'pg_deletion_test' in self.cluster.config:
+            logger.info('PG deletion test in config')
+            pg_deletion_callback = self.pg_deletion_callback
+            self.cluster.create_pg_deletion_test(self.run_dir, pg_deletion_callback)
+            self.cluster.wait_start_io()
+
         monitoring.start(self.run_dir)
 
         logger.info('Running fio %s test.', self.mode)
@@ -249,6 +257,8 @@ class Fio(Benchmark):
         if 'scrub_recov_test' in self.cluster.config:
             self.cluster.wait_scrub_recovery_done()
 
+        if 'pg_deletion_test' in self.cluster.config:
+            self.cluster.wait_pg_deletion_done()
 
         monitoring.stop(self.run_dir)
 
@@ -268,6 +278,9 @@ class Fio(Benchmark):
 
     def scrub_recov_callback(self):
         logger.info('Scrub+Recovery thread completed')
+
+    def pg_deletion_callback(self):
+        logger.info('PG Deletion thread completed')
 
     def analyze(self, out_dir):
         logger.info('Convert results to json format.')

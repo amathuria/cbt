@@ -155,6 +155,12 @@ class Ceph(Cluster):
         self.prefill_scrub_time = 0
         self.scrub_pool_name = ''
 
+        #PG Deletion tests
+        self.prefill_pg_deletion_objects = 0
+        self.prefill_pg_deletion_object_size = 0
+        self.prefill_pg_deletion_time = 0
+        self.pg_deletion_pool_name = ''
+
     def initialize(self):
         # Reset the rulesets
         self.ruleset_map = {}
@@ -577,6 +583,38 @@ class Ceph(Cluster):
 
         return ret
 
+    def log_pg_deletion_stats(self, pgdeletionstatsfile=None):
+        if not pgdeletionstatsfile:
+            return
+        PGMAP = "pgmap"
+        NUM_OBJECTS = "num_objects"
+        DATA_BYTES = "data_bytes"
+        BYTES_USED = "bytes_used"
+        BYTES_AVAIL = "bytes_avail"
+        BYTES_TOTAL = "bytes_total"
+        fmtjson = "--format=json"
+        separator = ","
+        stdout, stderr = common.pdsh(settings.getnodes('head'), '%s -c %s -s %s' % (self.ceph_cmd, self.tmp_conf, fmtjson)).communicate()
+        stdout = stdout.split(':', 1)[1]
+        stdout = stdout.strip()
+        try:
+            jsondata = json.loads(stdout)
+        except ValueError as e:
+            logger.error(str(e))
+            return
+        delstats = []
+        delstats.append(str(time.time()))
+        delstats.append(str(jsondata[PGMAP][NUM_OBJECTS]))
+        delstats.append(str(jsondata[PGMAP][DATA_BYTES]))
+        delstats.append(str(jsondata[PGMAP][BYTES_USED]))
+        delstats.append(str(jsondata[PGMAP][BYTES_AVAIL]))
+        delstats.append(str(jsondata[PGMAP][BYTES_TOTAL]))
+
+        if len(delstats):
+            message = separator.join(delstats)
+            stdout, stderr = common.pdsh(settings.getnodes('head'), 'echo -e %s >> %s' % (message, pgdeletionstatsfile)).communicate()
+
+
     def log_scrubbing_stats(self, scrubstatsfile=None, pgid=None):
         if not scrubstatsfile:
             return
@@ -709,6 +747,60 @@ class Ceph(Cluster):
                         logger.info('Scrubbing is complete')
                         return 1
 
+    def check_pg_deletion(self, pgdeletestatsfile=None):
+        logger.info('Waiting until PG Deletion completes')
+        fmtjson = '--format=json'
+        #pg_deletion_pool_size_bytes = pg deletion pool # objects * size of objects (MiB) * 1048576 (MiB in bytes)
+        PGMAP = "pgmap"
+        NUM_OBJECTS = "num_objects"
+        DATA_BYTES = "data_bytes"
+        BYTES_USED = "bytes_used"
+        BYTES_AVAIL = "bytes_avail"
+        BYTES_TOTAL = "bytes_total"
+        fmtjson = "--format=json"
+        separator = ","
+        stdout, stderr = common.pdsh(settings.getnodes('head'), '%s -c %s -s %s' % (self.ceph_cmd, self.tmp_conf, fmtjson)).communicate()
+        stdout = stdout.split(':', 1)[1]
+        stdout = stdout.strip()
+        try:
+            jsondata = json.loads(stdout)
+        except ValueError as e:
+            logger.error(str(e))
+            return 0
+        if pgdeletestatsfile:
+            header = "Time, Num Objs, Data Bytes, Bytes Used, Bytes Avail, Bytes Total"
+            stdout, stderr = common.pdsh(settings.getnodes('head'), 'echo %s >> %s' % (header, pgdeletestatsfile)).communicate()
+        bytes_available = int(jsondata[PGMAP][BYTES_USED])
+        logger.info("BYTES AVAILABLE: %s", bytes_available)
+        time.sleep(1)
+        try_no = 0
+        while True:
+            logger.info('In while')
+            logger.info(int(jsondata[PGMAP][BYTES_USED]))
+            logger.info(bytes_available)
+            stdout, stderr = common.pdsh(settings.getnodes('head'), '%s -c %s -s %s' % (self.ceph_cmd, self.tmp_conf, fmtjson)).communicate()
+            stdout = stdout.split(':', 1)[1]
+            stdout = stdout.strip()
+            try:
+                jsondata = json.loads(stdout)
+            except ValueError as e:
+                logger.error(str(e))
+                return 0
+            if try_no == 20:
+                logger.info('PG pool deletion complete!')
+                return 1
+
+            if int(jsondata[PGMAP][BYTES_USED]) < bytes_available:
+                bytes_available = int(jsondata[PGMAP][BYTES_USED])
+                logger.info('PG deletion going on')
+                try_no = 0
+                self.log_pg_deletion_stats(pgdeletestatsfile)
+            elif int(jsondata[PGMAP][BYTES_USED]) >= bytes_available:
+                try_no = try_no + 1
+                logger.info('Try number: %s', try_no)
+                bytes_available = int(jsondata[PGMAP][BYTES_USED])
+                self.log_pg_deletion_stats(pgdeletestatsfile)
+
     def dump_config(self, run_dir):
         common.pdsh(settings.getnodes('osds'), 'sudo %s -c %s daemon osd.0 config show > %s/ceph_settings.out' % (self.ceph_cmd, self.tmp_conf, run_dir)).communicate()
 
@@ -744,6 +836,12 @@ class Ceph(Cluster):
         config['run_dir'] = run_dir
         self.srt = ScrubRecoveryThreadBackground(config, self, callback, self.stoprequest, self.haltrequest, self.startiorequest)
         self.srt.start()
+
+    def create_pg_deletion_test(self, run_dir, callback):
+        config = self.config.get("pg_deletion_test", {})
+        config['run_dir'] = run_dir
+        self.pdt = PGDeletionTestThreadBackground(config, self, callback, self.stoprequest, self.haltrequest, self.startiorequest)
+        self.pdt.start()
 
     def wait_start_io(self):
         logger.info("Waiting for signal to start client io...")
@@ -788,6 +886,24 @@ class Ceph(Cluster):
             if len(threads) == 1:
                 break
             self.srt.join(1)
+
+    def maybe_populate_pg_deletion_pool(self):
+        if self.prefill_pg_deletion_objects > 0 or self.self.prefill_pg_deletion_time > 0:
+            logger.info('prefilling %s %sbyte objects into PG deletion pool %s' % (self.prefill_pg_deletion_objects, self.prefill_pg_deletion_object_size, self.pg_deletion_pool_name))
+            common.pdsh(settings.getnodes('head'), 'sudo %s -p %s bench %s write -b %s --max-objects %s --no-cleanup' % (self.rados_cmd, self.pg_deletion_pool_name, self.prefill_pg_deletion_time, self.prefill_pg_deletion_object_size, self.prefill_pg_deletion_objects)).communicate()
+            self.check_health()
+
+    def initiate_pg_deletion(self):
+        logger.info("Deleting pool %s" % self.pg_deletion_pool_name)
+        common.pdsh(settings.getnodes('head'), '%s osd pool delete %s %s --yes-i-really-really-mean-it' % (self.ceph_cmd, self.pg_deletion_pool_name, self.pg_deletion_pool_name)).communicate()
+
+    def wait_pg_deletion_done(self):
+        self.stoprequest.set()
+        while True:
+            threads = threading.enumerate()
+            if len(threads) == 1:
+                break
+            self.pdt.join(1)
 
     def check_pg_autoscaler(self, timeout=-1, logfile=None):
         ret = 0
@@ -896,6 +1012,16 @@ class Ceph(Cluster):
             self.prefill_scrub_time = profile.get('prefill_scrub_time', 0)
             if self.prefill_scrub_objects > 0:
                 self.scrub_pool_name = name
+
+        pg_deletion_pool = profile.get('pg_deletion_pool', False)
+        if pg_deletion_pool:
+            logger.info("PG Deletion Pool found")
+            self.prefill_pg_deletion_objects = profile.get('prefill_pg_deletion_objects', 0)
+            self.prefill_pg_deletion_object_size = profile.get('prefill_pg_deletion_object_size', 0)
+            self.prefill_pg_deletion_time = profile.get('prefill_pg_deletion_time', 0)
+            if self.prefill_pg_deletion_objects > 0:
+                logger.info(name)
+                self.pg_deletion_pool_name = name
 
         if replication and replication == 'erasure':
             common.pdsh(settings.getnodes('head'), 'sudo %s -c %s osd pool create %s %d %d erasure %s' % (self.ceph_cmd, self.tmp_conf, name, pg_size, pgp_size, erasure_profile),
@@ -1505,3 +1631,91 @@ class ScrubRecoveryThreadBackground(threading.Thread):
         while not self.haltrequest.isSet():
           self.states[self.state]()
         common.pdsh(settings.getnodes('head'), self.logcmd('Exiting scrub+recovery test thread.  Last state was: %s' % self.state)).communicate()
+
+
+class PGDeletionTestThreadBackground(threading.Thread):
+    def __init__(self, config, cluster, callback, stoprequest, haltrequest, startiorequest):
+        threading.Thread.__init__(self)
+        self.config = config
+        self.cluster = cluster
+        self.callback = callback
+        self.state = 'pre'
+        self.states = {'pre': self.pre, 'osdout': self.osdout, 'osdin':self.osdin,
+                       'post': self.post, 'done': self.done}
+        self.startiorequest = startiorequest
+        self.stoprequest = stoprequest
+        self.haltrequest = haltrequest
+        self.outhealthtries = 0
+        self.inhealthtries = 0
+        self.maxhealthtries = 60
+        self.health_checklist = ["peering", "recovery_wait", "stuck", "inactive", "unclean", "recovery"]
+        self.ceph_cmd = self.cluster.ceph_cmd
+        self.lasttime = time.time()
+
+    def logcmd(self, message):
+        return 'echo "[`date`] %s" >> %s/pg_deletion.log' % (message, self.config.get('run_dir'))
+
+    def pre(self):
+        pre_time = self.config.get("pre_time", 60)
+        common.pdsh(settings.getnodes('head'), self.logcmd('Starting PG Deletion Test Thread, waiting %s seconds.' % pre_time)).communicate()
+        time.sleep(pre_time)
+        self.state = 'osdout'
+
+    def osdout(self):
+        pg_deletion_log = "%s/pg_deletion.log" % self.config.get('run_dir')
+        pg_deletion_stats_log = "%s/pg_deletion_stats.log" % self.config.get('run_dir')
+        ret = self.cluster.check_health(self.health_checklist, None, None)
+
+        common.pdsh(settings.getnodes('head'), self.logcmd("ret: %s" % ret)).communicate()
+
+        self.cluster.maybe_populate_pg_deletion_pool()
+        common.pdsh(settings.getnodes('head'), self.logcmd("osdout state - Sleeping for 10 secs after populating deletion pool.")).communicate()
+        time.sleep(10)
+        self.lasttime = time.time()
+        self.state = "osdin"
+
+    def osdin(self):
+        pg_deletion_stats_log = "%s/pg_deletion_stats.log" % self.config.get('run_dir')
+        self.startiorequest.set()
+        common.pdsh(settings.getnodes('head'), self.logcmd("osdin state - Sleeping for 60 secs before starting PG Deletion")).communicate()
+        time.sleep(60)
+        self.cluster.initiate_pg_deletion()
+        ret = self.cluster.check_pg_deletion(pg_deletion_stats_log)
+        if ret == 1:
+            self.state = "post"
+
+    def post(self):
+        if self.stoprequest.isSet():
+            common.pdsh(settings.getnodes('head'), self.logcmd('Cluster is healthy, but stoprequest is set, finishing now.')).communicate()
+            self.haltrequest.set()
+            return
+
+        if self.config.get("repeat", False):
+            # reset counters
+            self.outhealthtries = 0
+            self.inhealthtries = 0
+
+            common.pdsh(settings.getnodes('head'), self.logcmd('Cluster is healthy, but repeat is set.  Moving to "osdout" state.')).communicate()
+            self.state = "osdout"
+            return
+
+        common.pdsh(settings.getnodes('head'), self.logcmd('Cluster is healthy, finishing up...')).communicate()
+        self.state = "done"
+
+    def done(self):
+        common.pdsh(settings.getnodes('head'), self.logcmd("Done.  Calling parent callback function.")).communicate()
+        self.callback()
+        self.haltrequest.set()
+
+    def join(self, timeout=None):
+        common.pdsh(settings.getnodes('head'), self.logcmd('Received notification that parent is finished and waiting.')).communicate()
+        super(PGDeletionTestThreadBackground, self).join(timeout)
+
+    def run(self):
+        self.haltrequest.clear()
+        self.stoprequest.clear()
+        self.startiorequest.clear()
+        while not self.haltrequest.isSet():
+          self.states[self.state]()
+        common.pdsh(settings.getnodes('head'), self.logcmd('Exiting PG deletion test thread.  Last state was: %s' % self.state)).communicate()
+

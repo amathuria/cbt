@@ -1,0 +1,83 @@
+cluster:
+  user: 'aishwarya'
+  head: "o04"
+  clients: ["o04"]
+  osds: ["o04"]
+  mons:
+    o04:
+      a: "127.0.0.1:6789"
+  mgrs:
+    o04:
+      x: "127.0.0.1:1234"
+  mdss:
+    o04:
+      a: ~
+  osds_per_node: 4
+  fs: 'xfs'
+  mkfs_opts: '-f -i size=2048'
+  mount_opts: '-o inode64,noatime,logbsize=256k'
+  conf_file: '/home/aishwarya/src/ceph/cbt/scrub_test.conf'
+  iterations: 1
+  use_existing: False
+  clusterid: "ceph"
+  tmp_dir: "/tmp/cbt"
+  ceph-osd_cmd: "env -i TCMALLOC_MAX_TOTAL_THREAD_CACHE_BYTES=134217728 /usr/local/bin/ceph-osd"
+  ceph-mon_cmd: "/usr/local/bin/ceph-mon"
+  ceph-authtool_cmd: "/usr/local/bin/ceph-authtool"
+  ceph-mon_cmd: "/usr/local/bin/ceph-mon"
+  ceph-run_cmd: "/usr/local/bin/ceph-run"
+  rados_cmd: "/usr/local/bin/rados"
+  ceph_cmd: "/usr/local/bin/ceph"
+  rbd_cmd: "/usr/local/bin/rbd"
+  rbd-nbd_cmd: "/usr/local/bin/rbd-nbd"
+  ceph-mgr_cmd: "/usr/local/bin/ceph-mgr"
+  ceph-mds_cmd: "/usr/local/bin/ceph-mds"
+  mount_cmd: "/usr/local/sbin/mount.ceph"
+  ceph-rgw_cmd: "env -i TCMALLOC_MAX_TOTAL_THREAD_CACHE_BYTES=134217728 /usr/local/bin/radosgw"
+  radosgw-admin_cmd: "/usr/local/bin/radosgw-admin"
+  enable_scrub: False
+  pool_profiles:
+    rbdpgdelete:
+      pg_deletion_pool: True
+      pg_size: 64
+      pgp_size: 64
+      replication: 3
+      prefill_pg_deletion_time: 1800
+      prefill_pg_deletion_objects: 1000000 #3000000 #6000000 #10000000 #2200000
+      prefill_pg_deletion_object_size: 4194304
+    rbd:
+      pg_size: 64
+      pgp_size: 64
+      replication: 3
+      prefill_object_size: 4194304
+      prefill_objects: 5000
+      prefill_time: 10
+  pg_deletion_test:
+    osds: [0]
+client_endpoints:
+  o04:
+    driver: 'librbd'
+    pool_profile: 'rbd'
+    pg_deletion_pool_profile: 'rbdpgdelete' 
+benchmarks:
+  fio:
+    time: 120
+    time_based: True
+    ioengine: 'rbd'
+    direct: 1
+    prefill: True
+    size: 4096
+    rate_iops: 9000
+    mode: ['randwrite']
+    op_size: [4096]
+    procs_per_volume: [1]
+    iodepth: [64]
+    osd_ra: [4096]
+    cmd_path: '/home/aishwarya/src/fio/fio'
+    volumes_per_client: [1]
+    client_endpoints: 'o04'
+    #recov_test_type: 'background'
+monitoring_profiles:
+  collectl:
+    nodes:
+      - osds

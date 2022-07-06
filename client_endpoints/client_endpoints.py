@@ -48,3 +48,6 @@ class ClientEndpoints(object):
 
     def create_scrubbing_image(self):
         pass
+
+    def create_pg_deletion_image(self):
+        pass

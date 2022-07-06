@@ -47,6 +47,7 @@ class LibrbdFio(Benchmark):
         self.pool_name = config.get("poolname", "cbt-librbdfio")
         self.recov_pool_name = config.get("recov_pool_name", "cbt-librbdfio-recov")
         self.scrub_pool_name = config.get("scrub_pool_name", "cbt-librbdfio-scrub")
+        self.pg_deletion_pool_name = config.get("pg_deletion_pool_name", "cbt-librbdfio-pg-deletion")
         self.scrub_pool_profile = config.get("scrub_pool_profile", "default")
         self.rbdname = config.get('rbdname', '')
 
@@ -92,6 +93,9 @@ class LibrbdFio(Benchmark):
         if 'scrub_recov_test' in self.cluster.config:
             self.mkrecovimage()
             self.mkscrubimage()
+
+        if 'pg_deletion_test' in self.cluster.config:
+            self.mkpgdeletionimage()
 
         self.mkimages()
         # populate the fio files
@@ -148,6 +152,10 @@ class LibrbdFio(Benchmark):
             self.cluster.create_scrub_recovery_test(self.run_dir, scrub_recov_callback)
             self.cluster.wait_start_io()
 
+        if 'pg_deletion_test' in self.cluster.config:
+            pg_deletion_callback = self.pg_deletion_callback
+            self.cluster.create_pg_deletion_test(self.run_dir, pg_deletion_callback)
+            self.cluster.wait_start_io()
 
         monitoring.start(self.run_dir)
 
@@ -165,6 +173,9 @@ class LibrbdFio(Benchmark):
 
         if 'scrub_recov_test' in self.cluster.config:
             self.cluster.wait_scrub_recovery_done()
+ 
+        if 'pg_deletion_test' in self.cluster.config:
+            self.cluster.wait_pg_deletion_done()
 
         monitoring.stop(self.run_dir)
 
@@ -246,6 +257,18 @@ class LibrbdFio(Benchmark):
                     self.cluster.mkimage('cbt-librbdfio-scrub-%s-%d' % (node,volnum), self.vol_size, self.scrub_pool_name, self.data_pool, self.vol_object_size)
         monitoring.stop()
 
+    def mkpgdeletionimage(self):
+        logger.info('Creating PG deletion image...')
+        monitoring.start("%s/pg_deletion_pool_monitoring" % self.run_dir)
+        if (self.use_existing_volumes == False):
+            self.cluster.rmpool(self.pg_deletion_pool_name, self.pg_deletion_pool_profile)
+            self.cluster.mkpool(self.pg_deletion_pool_name, self.pg_deletion_pool_profile, 'rbd')
+            for node in common.get_fqdn_list('clients'):
+                for volnum in range(0, self.volumes_per_client):
+                    node = node.rpartition("@")[2]
+                    self.cluster.mkimage('cbt-librbdfio-pgdeletion-%s-%d' % (node,volnum), self.vol_size, self.pg_deletion_pool_name, self.data_pool, self.vol_object_size)
+        monitoring.stop()
+
     def mkimages(self):
         monitoring.start("%s/pool_monitoring" % self.run_dir)
         if (self.use_existing_volumes == False):
@@ -269,6 +292,9 @@ class LibrbdFio(Benchmark):
 
     def scrubbing_callback(self):
         logger.info('Scrubbing thread completed!')
+
+    def pg_deletion_callback(self):
+        logger.info('PG deletion thread completed!')
 
     def parse(self, out_dir):
         for client in settings.getnodes('clients').split(','):
